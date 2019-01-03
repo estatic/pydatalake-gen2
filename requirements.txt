@@ -1,2 +1,4 @@
 requests
 pytest
+azure-storage-blob
+azure-storage-common
