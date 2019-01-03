@@ -39,6 +39,8 @@ class SharedKeyAuth(AuthBase):
             params[key] = val
         params = "\n".join([f"{key}:{val}" for key, val in params.items()])
 
+        canonicalized_headers = "\n".join([f"{key}:{val}" for key, val in r.headers.items() if key.startswith('x-ms')])
+
         inputvalue = f'{r.method}\n' \
                      '\n' \
                      '\n' \
@@ -51,7 +53,7 @@ class SharedKeyAuth(AuthBase):
                      '\n' \
                      '\n' \
                      '\n' \
-                     f'x-ms-date:{r.headers["x-ms-date"]}\nx-ms-version:{r.headers["x-ms-version"]}\n' \
+                     f'{canonicalized_headers}\n' \
                      f'/{self.account}{parsed_url.path}\n{params}'
 
         dig = hmac.new(base64.b64decode(self.account_key), msg=inputvalue.encode('utf-8'),
