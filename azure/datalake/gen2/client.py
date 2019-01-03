@@ -30,7 +30,7 @@ class SharedKeyAuth(AuthBase):
                 required_headers[key] = val
         r.headers = OrderedDict(required_headers)
         r.headers["x-ms-date"] = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
-        r.headers["x-ms-version"] = "2014-02-14"
+        r.headers["x-ms-version"] = "2018-03-28"
         parsed_url = urlparse(r.url)
         qparams = parsed_url.query.split('&')
         params = {}
@@ -101,19 +101,26 @@ class FileSystemClient(BasicClient):
                                      f"{file_path}?resource=filesystem&timeout={timeout}",
                                      headers=headers)
         if response.status_code == 201:
-            return response.headers()
+            return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
     def delete_filesystem(self, file_path: str, timeout: int = None):
         if file_path.startswith('/'):
             file_path = file_path[1:]
+
+        params = []
+        params.append('resource=filesystem')
+        if timeout:
+            params.append(f'timeout={timeout}')
+        query = '&'.join(params)
+
         response = self.make_request('DELETE',
                                      f"https://{self.storage_account}.{self.dns_suffix}/"
-                                     f"{file_path}?resource=filesystem&timeout={timeout}",
+                                     f"{file_path}?{query}",
                                      headers={})
         if response.status_code == 202:
-            return response.headers()
+            return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text()}")
 
