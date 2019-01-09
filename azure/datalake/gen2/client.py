@@ -24,6 +24,8 @@ class SharedKeyAuth(AuthBase):
 
     def __call__(self, r: Request):
         # modify and return the request
+        print(f"Requesting... {r.url}")
+
         required_headers = {}
         for key, val in r.headers.items():
             if key in ["Content-Length", "Content-Type"] or key.startswith('x-ms'):
