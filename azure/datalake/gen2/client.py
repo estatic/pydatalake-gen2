@@ -1,7 +1,6 @@
 from collections import OrderedDict
 
 import requests
-import uuid
 import hmac
 from datetime import datetime
 import hashlib
@@ -26,11 +25,12 @@ class SharedKeyAuth(AuthBase):
         # modify and return the request
         required_headers = {}
         for key, val in r.headers.items():
-            if key in ["Context-Length", "Content-Type"] or key.startswith('x-ms'):
+            if key in ["Content-Length", "Content-Type"] or key.startswith('x-ms'):
                 required_headers[key] = val
         r.headers = OrderedDict(required_headers)
         r.headers["x-ms-date"] = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
-        r.headers["x-ms-version"] = "2018-03-28"
+        r.headers["x-ms-version"] = "2018-06-17"
+
         parsed_url = urlparse(r.url)
         qparams = parsed_url.query.split('&')
         params = {}
@@ -39,12 +39,24 @@ class SharedKeyAuth(AuthBase):
             params[key] = val
         params = "\n".join([f"{key}:{val}" for key, val in params.items()])
 
-        canonicalized_headers = "\n".join([f"{key}:{val}" for key, val in r.headers.items() if key.startswith('x-ms')])
+        canonicalized_headers = [f"{key}:{val}" for key, val in
+                                 sorted(
+                                     r.headers.items(),
+                                     key=lambda x: x[0]
+                                 )
+                                 if key.startswith('x-ms')
+                                 ]
+
+        canonicalized_headers = "\n".join(canonicalized_headers)
+
+        length = r.headers.get("Content-Length", "0")
+        if length == "0":
+            length = ""
 
         inputvalue = f'{r.method}\n' \
                      '\n' \
                      '\n' \
-                     f'{r.headers.get("Content-Length", "")}\n' \
+                     f'{length}\n' \
                      '\n' \
                      f'{r.headers.get("Content-Type", "")}\n' \
                      '\n' \
@@ -60,6 +72,7 @@ class SharedKeyAuth(AuthBase):
                        digestmod=hashlib.sha256).digest()
         signature = base64.b64encode(dig).decode()
         r.headers["Authorization"] = f"SharedKey {self.account}:{signature}"
+
         return r
 
 
@@ -109,8 +122,8 @@ class FileSystemClient(BasicClient):
         if file_path.startswith('/'):
             file_path = file_path[1:]
 
-        params = []
-        params.append('resource=filesystem')
+        params = ['resource=filesystem']
+
         if timeout:
             params.append(f'timeout={timeout}')
         query = '&'.join(params)
@@ -122,12 +135,11 @@ class FileSystemClient(BasicClient):
         if response.status_code == 202:
             return response.headers
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
     def list_filesystem(self, prefix: str = None, continuation: str = None, max_results: int = None,
                         timeout: str = None):
-        params = []
-        params.append('resource=account')
+        params = ['resource=account']
         if prefix:
             params.append(f'prefix={prefix}')
         if timeout:
@@ -145,7 +157,7 @@ class FileSystemClient(BasicClient):
         if response.status_code == 200:
             return response.json()
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
     def get_properties_filesystem(self, path: str, timeout: int = None):
         if path.startswith('/'):
@@ -161,7 +173,7 @@ class FileSystemClient(BasicClient):
         if response.status_code == 200:
             return response.json()
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
     def set_properties_filesystem(self, path: str, properties: dict, timeout: int = None):
         if path.startswith('/'):
@@ -180,11 +192,12 @@ class FileSystemClient(BasicClient):
         if response.status_code == 200:
             return response.headers()
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
 
 class PathClient(BasicClient):
-    def create_path(self, filesystem, path, resource, continuation: str = None, mode: str = None, timeout: int = None):
+    def create_path(self, filesystem, path, resource: str = None, continuation: str = None, mode: str = None,
+                    timeout: int = None):
         if path.startswith('/'):
             path = path[1:]
 
@@ -207,12 +220,36 @@ class PathClient(BasicClient):
         response = self.make_request('PUT', f"https://{self.storage_account}.{self.dns_suffix}/"
                                             f"{filesystem}/{path}"
                                             f"?{query}")
-        if response.status_code == 200:
-            return response.headers()
+        if response.status_code == 201:
+            return response.headers
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
-    def create_path(self, filesystem, path, resource, recursive=False, continuation: str = None, timeout: int = None):
+    def rename_file(self, source_path, destination_path, timeout: int = None):
+        if destination_path.startswith('/'):
+            destination_path = destination_path[1:]
+        if not source_path.startswith('/'):
+            source_path = f"/{source_path}"
+
+        params = []
+        if timeout:
+            params.append(f'timeout={timeout}')
+        params.append('mode=posix')
+
+        query = '&'.join(params)
+
+        headers = {'x-ms-rename-source': source_path, 'Content-Length': "3024",
+                   "Content-Type": "application/octet-stream", "x-ms-content-type": "application/octet-stream"}
+
+        response = self.make_request('PUT', f"https://{self.storage_account}.{self.dns_suffix}/"
+                                            f"{destination_path}"
+                                            f"?{query}", headers=headers)
+        if response.status_code == 201:
+            return response.headers
+        else:
+            raise Exception(f"{response.status_code}: {response.text}")
+
+    def delete_path(self, filesystem, path, resource, recursive=False, continuation: str = None, timeout: int = None):
         if path.startswith('/'):
             path = path[1:]
 
@@ -237,7 +274,7 @@ class PathClient(BasicClient):
         if response.status_code == 200:
             return response.headers()
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
     def get_properties_path(self, filesystem, path, action: str = None, upn: bool = False, timeout: int = None):
         if path.startswith('/'):
@@ -262,7 +299,7 @@ class PathClient(BasicClient):
         if response.status_code == 200:
             return response.headers()
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
     def lease_path(self, filesystem, path, action, lease_id: str = None, duration: int = None, timeout: int = None):
         if action not in LEASE_ACTIONS:
@@ -294,7 +331,7 @@ class PathClient(BasicClient):
         if response.status_code == 200:
             return response.headers()
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
     def list_path(self, filesystem, directory: str = None, recursive: bool = True, continuation: str = False,
                   max_results: int = None, upn: bool = None, timeout: int = None):
@@ -308,25 +345,27 @@ class PathClient(BasicClient):
             params.append(f'directory={directory}')
         if max_results:
             params.append(f'maxResults={max_results}')
+
         if recursive:
             params.append(f'recursive=true')
         else:
             params.append(f'recursive=false')
-        if upn:
-            params.append(f'upn=true')
-        else:
-            params.append(f'upn=false')
+        if upn is not None:
+            if upn:
+                params.append(f'upn=true')
+            else:
+                params.append(f'upn=false')
 
-        params.append(f'resource=filesystem')
+        params.append('resource=filesystem')
         query = '&'.join(params)
 
         response = self.make_request('GET', f"https://{self.storage_account}.{self.dns_suffix}/"
                                             f"{filesystem}"
                                             f"?{query}")
         if response.status_code == 200:
-            return response.headers()
+            return response.json()
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
     def read_path(self, filesystem: str, path: str, timeout: int = None):
         if path.startswith('/'):
@@ -344,7 +383,7 @@ class PathClient(BasicClient):
         if response.status_code == 200:
             return response.headers()
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
     def update_path(self, filesystem: str, path: str, action: str, data, position: int = None,
                     retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None):
@@ -381,7 +420,7 @@ class PathClient(BasicClient):
         if response.status_code == 200:
             return response.headers()
         else:
-            raise Exception(f"{response.status_code}: {response.text()}")
+            raise Exception(f"{response.status_code}: {response.text}")
 
 
 class DataLakeGen2Client(FileSystemClient, PathClient):
