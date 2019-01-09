@@ -5,6 +5,7 @@ import hmac
 from datetime import datetime
 import hashlib
 import base64
+import os
 from urllib.parse import urlparse
 
 from requests import Request
@@ -225,7 +226,7 @@ class PathClient(BasicClient):
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
-    def rename_file(self, source_path, destination_path, timeout: int = None):
+    def rename_file(self, source_path: str, destination_path: str, timeout: int = None):
         if destination_path.startswith('/'):
             destination_path = destination_path[1:]
         if not source_path.startswith('/'):
@@ -238,7 +239,15 @@ class PathClient(BasicClient):
 
         query = '&'.join(params)
 
-        headers = {'x-ms-rename-source': source_path, 'Content-Length': "3024",
+        root, filename = os.path.split(source_path)
+
+        paths = self.list_path(root)
+        paths = [p for p in paths['paths'] if p['name'] == filename]
+
+        if len(paths) == 0:
+            raise Exception("File not found")
+
+        headers = {'x-ms-rename-source': source_path, 'Content-Length': paths[0]['contentLength'],
                    "Content-Type": "application/octet-stream", "x-ms-content-type": "application/octet-stream"}
 
         response = self.make_request('PUT', f"https://{self.storage_account}.{self.dns_suffix}/"
@@ -335,6 +344,8 @@ class PathClient(BasicClient):
 
     def list_path(self, filesystem, directory: str = None, recursive: bool = True, continuation: str = False,
                   max_results: int = None, upn: bool = None, timeout: int = None):
+        if filesystem.startswith("/"):
+            filesystem = filesystem[1:]
 
         params = []
         if timeout:
