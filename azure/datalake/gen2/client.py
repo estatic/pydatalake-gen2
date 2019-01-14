@@ -377,6 +377,8 @@ class PathClient(BasicClient):
                                             f"?{query}")
         if response.status_code == 200:
             return response.json()
+        elif response.status_code == 404:
+            return []
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
