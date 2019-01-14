@@ -380,7 +380,7 @@ class PathClient(BasicClient):
         elif response.status_code == 404:
             return {'paths': []}
         else:
-            raise Exception(f"{response.status_code}: {response.text}")
+            raise Exception(f"{response.status_code}: {response.text}\n{directory}")
 
     def read_path(self, filesystem: str, path: str, timeout: int = None):
         if path.startswith('/'):
