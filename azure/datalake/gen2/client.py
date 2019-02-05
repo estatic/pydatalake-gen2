@@ -1,3 +1,4 @@
+import logging
 from collections import OrderedDict
 
 import requests
@@ -12,6 +13,8 @@ from requests import Request
 from requests.auth import AuthBase
 
 LEASE_ACTIONS = ["acquire", "break", "change", "renew", "release"]
+LOGGER = logging.getLogger("pydatalake.gen2")
+LOGGER.setLevel(logging.DEBUG)
 
 
 class SharedKeyAuth(AuthBase):
@@ -38,7 +41,8 @@ class SharedKeyAuth(AuthBase):
         qparams = parsed_url.query.split('&')
         params = {}
         for param in qparams:
-            key, val = param.split('=')
+            key = param[:param.index('=')]
+            val = param[param.index('=')+1:]
             params[key] = val
         params = "\n".join([f"{key}:{val}" for key, val in params.items()])
 
@@ -242,9 +246,10 @@ class PathClient(BasicClient):
         query = '&'.join(params)
 
         root, filename = os.path.split(source_path)
+        filesystem, *directories = root[1:].split("/")
 
-        paths = self.list_path(root)
-        paths = [p for p in paths['paths'] if p['name'] == filename]
+        paths = self.list_path(filesystem)
+        paths = [p for p in paths['paths'] if p['name'].endswith(filename) and source_path.endswith(p['name'])]
 
         if len(paths) == 0:
             raise Exception("File not found")
@@ -345,7 +350,7 @@ class PathClient(BasicClient):
             raise Exception(f"{response.status_code}: {response.text}")
 
     def list_path(self, filesystem, directory: str = None, recursive: bool = True, continuation: str = False,
-                  max_results: int = None, upn: bool = None, timeout: int = None):
+                  max_results: int = None, upn: bool = None, timeout: int = None, options: dict = None):
         if filesystem.startswith("/"):
             filesystem = filesystem[1:]
 
@@ -374,9 +379,12 @@ class PathClient(BasicClient):
 
         response = self.make_request('GET', f"https://{self.storage_account}.{self.dns_suffix}/"
                                             f"{filesystem}"
-                                            f"?{query}")
+                                            f"?{query}", headers=options)
         if response.status_code == 200:
-            return response.json()
+            paths = response.json()
+            if response.headers.get('x-ms-continuation', None) is not None:
+                paths['continuation'] = response.headers.get('x-ms-continuation')
+            return paths
         elif response.status_code == 404:
             return {'paths': []}
         else:
