@@ -1,5 +1,7 @@
 import logging
-from collections import OrderedDict
+import threading
+from collections import OrderedDict, defaultdict
+from random import seed
 
 import requests
 import hmac
@@ -8,51 +10,65 @@ import hashlib
 import base64
 import os
 from urllib.parse import urlparse
+from urllib.parse import quote
 
 from requests import Request
 from requests.auth import AuthBase
 
+from functools import lru_cache, _make_key
+
 LEASE_ACTIONS = ["acquire", "break", "change", "renew", "release"]
 LOGGER = logging.getLogger("pydatalake.gen2")
 LOGGER.setLevel(logging.DEBUG)
+
+sleep_length = 5
+seed(123)
+arg_range = 3
+num_tasks = 5
+
+def threadsafe_lru(func):
+    func = lru_cache()(func)
+    lock_dict = defaultdict(threading.Lock)
+
+    def _thread_lru(*args, **kwargs):
+        key = _make_key(args, kwargs, typed=False)
+        with lock_dict[key]:
+            return func(*args, **kwargs)
+
+    return _thread_lru
 
 
 class SharedKeyAuth(AuthBase):
     """Attaches HTTP Shared Key Authentication to the given Request object."""
 
     def __init__(self, account, account_key):
-        # setup any auth-related data here
         self.account = account
         self.account_key = account_key
 
     def __call__(self, r: Request):
-        # modify and return the request
         print(f"Requesting... {r.url}")
 
         required_headers = {}
         for key, val in r.headers.items():
-            if key in ["Content-Length", "Content-Type"] or key.startswith('x-ms'):
+            if key in ["Content-Length", "Content-Type"] or key.startswith("x-ms"):
                 required_headers[key] = val
         r.headers = OrderedDict(required_headers)
-        r.headers["x-ms-date"] = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
-        r.headers["x-ms-version"] = "2018-06-17"
+        r.headers["x-ms-date"] = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+        r.headers["x-ms-version"] = "2018-11-09"
 
         parsed_url = urlparse(r.url)
-        qparams = parsed_url.query.split('&')
+        qparams = parsed_url.query.split("&")
         params = {}
         for param in qparams:
-            key = param[:param.index('=')]
-            val = param[param.index('=')+1:]
+            key = param[:param.index("=")]
+            val = param[param.index("=")+1:]
             params[key] = val
-        params = "\n".join([f"{key}:{val}" for key, val in params.items()])
+        params = "\n".join([f"{quote(key.lower())}:{val}"
+                            for key, val in sorted(params.items(), key=lambda x: x[0])])
 
-        canonicalized_headers = [f"{key}:{val}" for key, val in
-                                 sorted(
-                                     r.headers.items(),
-                                     key=lambda x: x[0]
-                                 )
-                                 if key.startswith('x-ms')
-                                 ]
+        canonicalized_headers = [f"{key.lower()}:{val}"
+                                 for key, val in sorted(r.headers.items(),
+                                                        key=lambda x: x[0]) if key.startswith("x-ms")]
 
         canonicalized_headers = "\n".join(canonicalized_headers)
 
@@ -60,23 +76,28 @@ class SharedKeyAuth(AuthBase):
         if length == "0":
             length = ""
 
-        inputvalue = f'{r.method}\n' \
-                     '\n' \
-                     '\n' \
-                     f'{length}\n' \
-                     '\n' \
-                     f'{r.headers.get("Content-Type", "")}\n' \
-                     '\n' \
-                     '\n' \
-                     '\n' \
-                     '\n' \
-                     '\n' \
-                     '\n' \
-                     f'{canonicalized_headers}\n' \
-                     f'/{self.account}{parsed_url.path}\n{params}'
+        content_type = r.headers.get("Content-Type", "")
 
-        dig = hmac.new(base64.b64decode(self.account_key), msg=inputvalue.encode('utf-8'),
-                       digestmod=hashlib.sha256).digest()
+        inputvalue = f"{r.method}\n" \
+                     "\n" \
+                     "\n" \
+                     f"{length}\n" \
+                     "\n" \
+                     f"{content_type}\n" \
+                     "\n" \
+                     "\n" \
+                     "\n" \
+                     "\n" \
+                     "\n" \
+                     "\n" \
+                     f"{canonicalized_headers}\n" \
+                     f"/{self.account}{parsed_url.path}\n{params}"
+
+        print(inputvalue)
+        dig = hmac.new(
+            base64.b64decode(self.account_key),
+            msg=inputvalue.encode("utf-8"), digestmod=hashlib.sha256
+        ).digest()
         signature = base64.b64encode(dig).decode()
         r.headers["Authorization"] = f"SharedKey {self.account}:{signature}"
 
@@ -88,7 +109,7 @@ class BasicClient:
     def __init__(self, storage_account, shared_key, dns_suffix=None, account=None):
         self.storage_account = storage_account
         if dns_suffix is None:
-            self.dns_suffix = 'dfs.core.windows.net'
+            self.dns_suffix = "dfs.core.windows.net"
         else:
             self.dns_suffix = dns_suffix
 
@@ -109,14 +130,14 @@ class FileSystemClient(BasicClient):
         super().__init__(storage_account, shared_key, dns_suffix, account)
 
     def create_filesystem(self, file_path: str, timeout: int = None, properties: dict = None):
-        if file_path.startswith('/'):
+        if file_path.startswith("/"):
             file_path = file_path[1:]
         headers = {}
         if properties:
-            headers['x-ms-properties'] = ', '.join([f"{key}={val}" for key, val in properties.items()])
+            headers["x-ms-properties"] = ", ".join([f"{key}={val}" for key, val in properties.items()])
         if timeout is None:
             timeout = 60
-        response = self.make_request('PUT',
+        response = self.make_request("PUT",
                                      f"https://{self.storage_account}.{self.dns_suffix}/"
                                      f"{file_path}?resource=filesystem&timeout={timeout}",
                                      headers=headers)
@@ -126,16 +147,16 @@ class FileSystemClient(BasicClient):
             raise Exception(f"{response.status_code}: {response.text}")
 
     def delete_filesystem(self, file_path: str, timeout: int = None):
-        if file_path.startswith('/'):
+        if file_path.startswith("/"):
             file_path = file_path[1:]
 
-        params = ['resource=filesystem']
+        params = ["resource=filesystem"]
 
         if timeout:
-            params.append(f'timeout={timeout}')
-        query = '&'.join(params)
+            params.append(f"timeout={timeout}")
+        query = "&".join(params)
 
-        response = self.make_request('DELETE',
+        response = self.make_request("DELETE",
                                      f"https://{self.storage_account}.{self.dns_suffix}/"
                                      f"{file_path}?{query}",
                                      headers={})
@@ -146,18 +167,18 @@ class FileSystemClient(BasicClient):
 
     def list_filesystem(self, prefix: str = None, continuation: str = None, max_results: int = None,
                         timeout: str = None):
-        params = ['resource=account']
+        params = ["resource=account"]
         if prefix:
-            params.append(f'prefix={prefix}')
+            params.append(f"prefix={prefix}")
         if timeout:
-            params.append(f'timeout={timeout}')
+            params.append(f"timeout={timeout}")
         if continuation:
-            params.append(f'continuation={continuation}')
+            params.append(f"continuation={continuation}")
         if max_results:
-            params.append(f'maxResults={max_results}')
-        query = '&'.join(params)
+            params.append(f"maxResults={max_results}")
+        query = "&".join(params)
         headers = {}
-        response = self.make_request('GET',
+        response = self.make_request("GET",
                                      f"https://{self.storage_account}.{self.dns_suffix}/"
                                      f"?{query}",
                                      headers)
@@ -167,13 +188,13 @@ class FileSystemClient(BasicClient):
             raise Exception(f"{response.status_code}: {response.text}")
 
     def get_properties_filesystem(self, path: str, timeout: int = None):
-        if path.startswith('/'):
+        if path.startswith("/"):
             path = path[1:]
 
         if timeout is None:
             timeout = 60
 
-        response = self.make_request('HEAD',
+        response = self.make_request("HEAD",
                                      f"https://{self.storage_account}.{self.dns_suffix}/"
                                      f"{path}?resource=filesystem&timeout={timeout}",
                                      headers={})
@@ -183,16 +204,16 @@ class FileSystemClient(BasicClient):
             raise Exception(f"{response.status_code}: {response.text}")
 
     def set_properties_filesystem(self, path: str, properties: dict, timeout: int = None):
-        if path.startswith('/'):
+        if path.startswith("/"):
             path = path[1:]
 
         if timeout is None:
             timeout = 60
         headers = {}
         if properties:
-            headers['x-ms-properties'] = ', '.join([f"{key}={val}" for key, val in properties.items()])
+            headers["x-ms-properties"] = ", ".join([f"{key}={val}" for key, val in properties.items()])
 
-        response = self.make_request('PATCH',
+        response = self.make_request("PATCH",
                                      f"https://{self.storage_account}.{self.dns_suffix}/"
                                      f"{path}?resource=filesystem&timeout={timeout}",
                                      headers=headers)
@@ -205,26 +226,26 @@ class FileSystemClient(BasicClient):
 class PathClient(BasicClient):
     def create_path(self, filesystem, path, resource: str = None, continuation: str = None, mode: str = None,
                     timeout: int = None):
-        if path.startswith('/'):
+        if path.startswith("/"):
             path = path[1:]
 
         if resource is None:
-            resource = 'file'
+            resource = "file"
         if mode is None:
-            mode = 'posix'
+            mode = "posix"
 
         params = []
         if timeout:
-            params.append(f'timeout={timeout}')
+            params.append(f"timeout={timeout}")
         if continuation:
-            params.append(f'continuation={continuation}')
+            params.append(f"continuation={continuation}")
         if mode:
-            params.append(f'mode={mode}')
+            params.append(f"mode={mode}")
         if resource:
-            params.append(f'resource={resource}')
-        query = '&'.join(params)
+            params.append(f"resource={resource}")
+        query = "&".join(params)
 
-        response = self.make_request('PUT', f"https://{self.storage_account}.{self.dns_suffix}/"
+        response = self.make_request("PUT", f"https://{self.storage_account}.{self.dns_suffix}/"
                                             f"{filesystem}/{path}"
                                             f"?{query}")
         if response.status_code == 201:
@@ -232,32 +253,38 @@ class PathClient(BasicClient):
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
-    def rename_file(self, source_path: str, destination_path: str, timeout: int = None):
-        if destination_path.startswith('/'):
+    def rename_file(self, source_path: str, destination_path: str, timeout: int = None, content_length: int = None):
+        if destination_path.startswith("/"):
             destination_path = destination_path[1:]
-        if not source_path.startswith('/'):
+        if not source_path.startswith("/"):
             source_path = f"/{source_path}"
 
         params = []
         if timeout:
-            params.append(f'timeout={timeout}')
-        params.append('mode=posix')
+            params.append(f"timeout={timeout}")
+        params.append("mode=posix")
 
-        query = '&'.join(params)
+        query = "&".join(params)
 
         root, filename = os.path.split(source_path)
         filesystem, *directories = root[1:].split("/")
 
-        paths = self.list_path(filesystem)
-        paths = [p for p in paths['paths'] if p['name'].endswith(filename) and source_path.endswith(p['name'])]
+        if directories is None:
+            directories = []
 
-        if len(paths) == 0:
-            raise Exception("File not found")
+        if content_length is None:
+            paths = self.list_path(filesystem, directory='/'.join(directories), recursive=False)
+            paths = [p for p in paths["paths"] if p["name"].endswith(filename) and source_path.endswith(p["name"])]
 
-        headers = {'x-ms-rename-source': source_path, 'Content-Length': paths[0]['contentLength'],
+            if len(paths) == 0:
+                raise Exception("File not found")
+
+            content_length = paths[0]["contentLength"]
+
+        headers = {"x-ms-rename-source": source_path, "Content-Length": content_length,
                    "Content-Type": "application/octet-stream", "x-ms-content-type": "application/octet-stream"}
 
-        response = self.make_request('PUT', f"https://{self.storage_account}.{self.dns_suffix}/"
+        response = self.make_request("PUT", f"https://{self.storage_account}.{self.dns_suffix}/"
                                             f"{destination_path}"
                                             f"?{query}", headers=headers)
         if response.status_code == 201:
@@ -266,25 +293,25 @@ class PathClient(BasicClient):
             raise Exception(f"{response.status_code}: {response.text}")
 
     def delete_path(self, filesystem, path, resource, recursive=False, continuation: str = None, timeout: int = None):
-        if path.startswith('/'):
+        if path.startswith("/"):
             path = path[1:]
 
         if resource is None:
-            resource = 'file'
+            resource = "file"
         params = []
         if timeout:
-            params.append(f'timeout={timeout}')
+            params.append(f"timeout={timeout}")
         if continuation:
-            params.append(f'continuation={continuation}')
+            params.append(f"continuation={continuation}")
         if recursive:
-            params.append(f'recursive=true')
+            params.append(f"recursive=true")
         else:
-            params.append(f'recursive=false')
+            params.append(f"recursive=false")
         if resource:
-            params.append(f'resource={resource}')
-        query = '&'.join(params)
+            params.append(f"resource={resource}")
+        query = "&".join(params)
 
-        response = self.make_request('DELETE', f"https://{self.storage_account}.{self.dns_suffix}/"
+        response = self.make_request("DELETE", f"https://{self.storage_account}.{self.dns_suffix}/"
                                                f"{filesystem}/{path}"
                                                f"?{query}")
         if response.status_code == 200:
@@ -293,23 +320,23 @@ class PathClient(BasicClient):
             raise Exception(f"{response.status_code}: {response.text}")
 
     def get_properties_path(self, filesystem, path, action: str = None, upn: bool = False, timeout: int = None):
-        if path.startswith('/'):
+        if path.startswith("/"):
             path = path[1:]
 
         params = []
         if action is None:
-            params.append('action=getStatus')
+            params.append("action=getStatus")
         else:
-            params.append(f'action={action}')
+            params.append(f"action={action}")
         if timeout:
-            params.append(f'timeout={timeout}')
+            params.append(f"timeout={timeout}")
         if upn:
-            params.append(f'upn=true')
+            params.append(f"upn=true")
         else:
-            params.append(f'upn=false')
-        query = '&'.join(params)
+            params.append(f"upn=false")
+        query = "&".join(params)
 
-        response = self.make_request('HEAD', f"https://{self.storage_account}.{self.dns_suffix}/"
+        response = self.make_request("HEAD", f"https://{self.storage_account}.{self.dns_suffix}/"
                                              f"{filesystem}/{path}"
                                              f"?{query}")
         if response.status_code == 200:
@@ -321,27 +348,27 @@ class PathClient(BasicClient):
         if action not in LEASE_ACTIONS:
             raise Exception("Action variable is not valid")
 
-        if path.startswith('/'):
+        if path.startswith("/"):
             path = path[1:]
 
         params = []
 
         if timeout:
-            params.append(f'timeout={timeout}')
-        query = '&'.join(params)
+            params.append(f"timeout={timeout}")
+        query = "&".join(params)
 
-        headers = {'x-ms-lease-action': action}
+        headers = {"x-ms-lease-action": action}
         if action in ["renew", "change", "release"]:
             assert lease_id
-            headers['x-ms-lease-id'] = lease_id
+            headers["x-ms-lease-id"] = lease_id
 
-        if action == 'acquire':
+        if action == "acquire":
             assert lease_id
             assert duration
-            headers['x-ms-proposed-lease-id'] = lease_id
-            headers['x-ms-lease-duration'] = str(duration)
+            headers["x-ms-proposed-lease-id"] = lease_id
+            headers["x-ms-lease-duration"] = str(duration)
 
-        response = self.make_request('POST', f"https://{self.storage_account}.{self.dns_suffix}/"
+        response = self.make_request("POST", f"https://{self.storage_account}.{self.dns_suffix}/"
                                              f"{filesystem}/{path}"
                                              f"?{query}", headers)
         if response.status_code == 200:
@@ -349,58 +376,61 @@ class PathClient(BasicClient):
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
-    def list_path(self, filesystem, directory: str = None, recursive: bool = True, continuation: str = False,
-                  max_results: int = None, upn: bool = None, timeout: int = None, options: dict = None):
+    @threadsafe_lru
+    def list_path(self, filesystem, directory: str = None, recursive: bool = True, continuation: str = None,
+                  max_results: int = 5000, upn: bool = None, timeout: int = None, options: dict = None):
         if filesystem.startswith("/"):
             filesystem = filesystem[1:]
 
         params = []
         if timeout:
-            params.append(f'timeout={timeout}')
+            params.append(f"timeout={timeout}")
         if continuation:
-            params.append(f'continuation={continuation}')
+            params.append(f"continuation={quote(continuation)}")
         if directory:
-            params.append(f'directory={directory}')
+            params.append(f"directory={directory}")
         if max_results:
-            params.append(f'maxResults={max_results}')
+            params.append(f"maxResults={max_results}")
 
         if recursive:
-            params.append(f'recursive=true')
+            params.append(f"recursive=true")
         else:
-            params.append(f'recursive=false')
+            params.append(f"recursive=false")
         if upn is not None:
             if upn:
-                params.append(f'upn=true')
+                params.append(f"upn=true")
             else:
-                params.append(f'upn=false')
+                params.append(f"upn=false")
 
-        params.append('resource=filesystem')
-        query = '&'.join(params)
+        params.append("resource=filesystem")
+        query = "&".join(params)
 
-        response = self.make_request('GET', f"https://{self.storage_account}.{self.dns_suffix}/"
+        response = self.make_request("GET", f"https://{self.storage_account}.{self.dns_suffix}/"
                                             f"{filesystem}"
                                             f"?{query}", headers=options)
         if response.status_code == 200:
             paths = response.json()
-            if response.headers.get('x-ms-continuation', None) is not None:
-                paths['continuation'] = response.headers.get('x-ms-continuation')
+            if response.headers.get("x-ms-continuation", None) is not None:
+                paths["continuation"] = response.headers.get("x-ms-continuation")
+            if response.headers.get("x-ms-request-id", None) is not None:
+                paths["request-id"] = response.headers.get("x-ms-request-id")
             return paths
         elif response.status_code == 404:
-            return {'paths': []}
+            return {"paths": []}
         else:
             raise Exception(f"{response.status_code}: {response.text}\n{directory}")
 
     def read_path(self, filesystem: str, path: str, timeout: int = None):
-        if path.startswith('/'):
+        if path.startswith("/"):
             path = path[1:]
 
         params = []
         if timeout:
-            params.append(f'timeout={timeout}')
+            params.append(f"timeout={timeout}")
 
-        query = '&'.join(params)
+        query = "&".join(params)
 
-        response = self.make_request('GET', f"https://{self.storage_account}.{self.dns_suffix}/"
+        response = self.make_request("GET", f"https://{self.storage_account}.{self.dns_suffix}/"
                                             f"{filesystem}/{path}"
                                             f"?{query}")
         if response.status_code == 200:
@@ -410,34 +440,34 @@ class PathClient(BasicClient):
 
     def update_path(self, filesystem: str, path: str, action: str, data, position: int = None,
                     retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None):
-        if action not in ['append', 'flush', 'setProperties', 'setAccessControl']:
+        if action not in ["append", "flush", "setProperties", "setAccessControl"]:
             raise Exception("Action is not valid")
-        if path.startswith('/'):
+        if path.startswith("/"):
             path = path[1:]
 
         params = []
         if timeout:
-            params.append(f'timeout={timeout}')
+            params.append(f"timeout={timeout}")
         if action:
-            params.append(f'action={action}')
+            params.append(f"action={action}")
         if position:
-            params.append(f'position={position}')
+            params.append(f"position={position}")
         if retain_uncommitted_data:
-            params.append(f'retainUncommittedData=true')
+            params.append(f"retainUncommittedData=true")
         else:
-            params.append(f'retainUncommittedData=false')
+            params.append(f"retainUncommittedData=false")
 
-        query = '&'.join(params)
+        query = "&".join(params)
 
         headers = {}
-        if action == 'flush':
-            headers['Content-Length'] = 0
-        if action == 'append':
-            headers['Content-Length'] = len(data)
+        if action == "flush":
+            headers["Content-Length"] = 0
+        if action == "append":
+            headers["Content-Length"] = len(data)
         if lease_id:
-            headers['x-ms-lease-id'] = lease_id
+            headers["x-ms-lease-id"] = lease_id
 
-        response = self.make_request('PATCH', f"https://{self.storage_account}.{self.dns_suffix}/"
+        response = self.make_request("PATCH", f"https://{self.storage_account}.{self.dns_suffix}/"
                                               f"{filesystem}/{path}"
                                               f"?{query}", headers=headers, data=data)
         if response.status_code == 200:

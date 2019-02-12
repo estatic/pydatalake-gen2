@@ -4,7 +4,7 @@ import os
 
 install_reqs = parse_requirements("requirements.txt", session="hack")
 
-version = "0.0.1"
+version = "0.0.2"
 
 setup(
     name="pydatalake-gen2",
