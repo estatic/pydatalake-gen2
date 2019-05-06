@@ -1,8 +1,9 @@
+import os
 import unittest
 from azure.datalake.gen2.client import DataLakeGen2Client
 
-ACCOUNT_NAME = ''
-STORAGE_KEY = ''
+ACCOUNT_NAME = os.environ.get('ACCOUNT_NAME', '')
+STORAGE_KEY = os.environ.get('STORAGE_KEY', '')
 
 class TestGen2FileSystem(unittest.TestCase):
     client = DataLakeGen2Client(ACCOUNT_NAME, STORAGE_KEY)
@@ -33,6 +34,14 @@ class TestGen2FileSystem(unittest.TestCase):
         path = self.client.create_path('testfolder', 'testfolder2', resource='directory')
         files = self.client.rename_file('/testfolder/file1.txt', '/testfolder2/file2.txt')
         self.assertIsNotNone(files)
+
+    def test_update_path_append(self):
+        response = self.client.update_path('test1','test/test_file','append','test', timeout=60, position=0)
+        self.assertIsNotNone(response)
+
+    def test_update_path_flush(self):
+        response = self.client.update_path('test1','test/test_file','flush', position=0)
+        self.assertIsNotNone(response)
 
 
 if __name__ == '__main__':

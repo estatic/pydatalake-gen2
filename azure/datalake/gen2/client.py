@@ -218,7 +218,7 @@ class FileSystemClient(BasicClient):
                                      f"{path}?resource=filesystem&timeout={timeout}",
                                      headers=headers)
         if response.status_code == 200:
-            return response.headers()
+            return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
@@ -315,7 +315,7 @@ class PathClient(BasicClient):
                                                f"{filesystem}/{path}"
                                                f"?{query}")
         if response.status_code == 200:
-            return response.headers()
+            return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
@@ -340,7 +340,7 @@ class PathClient(BasicClient):
                                              f"{filesystem}/{path}"
                                              f"?{query}")
         if response.status_code == 200:
-            return response.headers()
+            return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
@@ -372,7 +372,7 @@ class PathClient(BasicClient):
                                              f"{filesystem}/{path}"
                                              f"?{query}", headers)
         if response.status_code == 200:
-            return response.headers()
+            return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
@@ -434,12 +434,12 @@ class PathClient(BasicClient):
                                             f"{filesystem}/{path}"
                                             f"?{query}")
         if response.status_code == 200:
-            return response.headers()
+            return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
-    def update_path(self, filesystem: str, path: str, action: str, data, position: int = None,
-                    retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None):
+    def update_path(self, filesystem: str, path: str, action: str, data = None, position: int = 0,
+                    retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None, close: bool = None):
         if action not in ["append", "flush", "setProperties", "setAccessControl"]:
             raise Exception("Action is not valid")
         if path.startswith("/"):
@@ -450,28 +450,31 @@ class PathClient(BasicClient):
             params.append(f"timeout={timeout}")
         if action:
             params.append(f"action={action}")
-        if position:
+        if position is not None:
             params.append(f"position={position}")
-        if retain_uncommitted_data:
-            params.append(f"retainUncommittedData=true")
-        else:
-            params.append(f"retainUncommittedData=false")
+        if close:
+            params.append(f"close={close}")
+        if action == "flush":
+            if retain_uncommitted_data:
+                params.append(f"retainUncommittedData=true")
+            else:
+                params.append(f"retainUncommittedData=false")
 
         query = "&".join(params)
 
         headers = {}
         if action == "flush":
-            headers["Content-Length"] = 0
+            headers["Content-Length"] = str(0)
         if action == "append":
-            headers["Content-Length"] = len(data)
+            headers["Content-Length"] = str(len(data))
         if lease_id:
             headers["x-ms-lease-id"] = lease_id
 
         response = self.make_request("PATCH", f"https://{self.storage_account}.{self.dns_suffix}/"
                                               f"{filesystem}/{path}"
                                               f"?{query}", headers=headers, data=data)
-        if response.status_code == 200:
-            return response.headers()
+        if response.status_code in (200, 202):
+            return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
