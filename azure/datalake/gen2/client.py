@@ -60,9 +60,10 @@ class SharedKeyAuth(AuthBase):
         qparams = parsed_url.query.split("&")
         params = {}
         for param in qparams:
-            key = param[:param.index("=")]
-            val = param[param.index("=")+1:]
-            params[key] = val
+            if len(param) > 0:
+                key = param[:param.index("=")]
+                val = param[param.index("=")+1:]
+                params[key] = val
         params = "\n".join([f"{quote(key.lower())}:{val}"
                             for key, val in sorted(params.items(), key=lambda x: x[0])])
 
@@ -428,18 +429,20 @@ class PathClient(BasicClient):
         if timeout:
             params.append(f"timeout={timeout}")
 
+        headers = {'Range': '0'}
+
         query = "&".join(params)
 
         response = self.make_request("GET", f"https://{self.storage_account}.{self.dns_suffix}/"
                                             f"{filesystem}/{path}"
-                                            f"?{query}")
+                                            f"?{query}", headers=headers)
         if response.status_code == 200:
             return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
     def update_path(self, filesystem: str, path: str, action: str, data = None, position: int = 0,
-                    retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None, close: bool = None):
+                    retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None, close: bool = None, attrs: dict = None):
         if action not in ["append", "flush", "setProperties", "setAccessControl"]:
             raise Exception("Action is not valid")
         if path.startswith("/"):
@@ -469,6 +472,10 @@ class PathClient(BasicClient):
             headers["Content-Length"] = str(len(data))
         if lease_id:
             headers["x-ms-lease-id"] = lease_id
+
+        if attrs:
+            for key, val in attrs.items():
+                headers[key] = val
 
         response = self.make_request("PATCH", f"https://{self.storage_account}.{self.dns_suffix}/"
                                               f"{filesystem}/{path}"
