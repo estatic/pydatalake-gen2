@@ -3,7 +3,7 @@ from pip._internal.req import parse_requirements
 
 install_reqs = parse_requirements("requirements.txt", session="hack")
 
-version = "0.0.3"
+version = "0.0.4"
 
 setup(
     name="pydatalake-gen2",
