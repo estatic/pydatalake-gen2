@@ -46,7 +46,7 @@ class SharedKeyAuth(AuthBase):
         self.account_key = account_key
 
     def __call__(self, r: Request):
-        print(f"Requesting... {r.url}")
+        LOGGER.debug(f"Requesting... {r.url}")
 
         required_headers = {}
         for key, val in r.headers.items():
@@ -94,7 +94,7 @@ class SharedKeyAuth(AuthBase):
                      f"{canonicalized_headers}\n" \
                      f"/{self.account}{parsed_url.path}\n{params}"
 
-        print(inputvalue)
+        LOGGER.debug(inputvalue)
         dig = hmac.new(
             base64.b64decode(self.account_key),
             msg=inputvalue.encode("utf-8"), digestmod=hashlib.sha256
