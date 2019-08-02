@@ -13,11 +13,17 @@ from urllib.parse import urlparse
 from urllib.parse import quote
 
 from requests import Request
+from requests.adapters import HTTPAdapter
 from requests.auth import AuthBase
 
 from functools import lru_cache, _make_key
 
+from urllib3 import Retry
+
 LEASE_ACTIONS = ["acquire", "break", "change", "renew", "release"]
+HEADERS_FOR_SIGN = ["Content-Encoding", "Content-Language", "Content-Length", "Content-MD5", "Content-Type", "Date",
+                    "If-Modified-Since", "If-Match", "If-None-Match", "If-Unmodified-Since", "Range"]
+
 LOGGER = logging.getLogger("pydatalake.gen2")
 LOGGER.setLevel(logging.DEBUG)
 
@@ -25,6 +31,27 @@ sleep_length = 5
 seed(123)
 arg_range = 3
 num_tasks = 5
+
+
+def requests_retry_session(
+        retries=3,
+        backoff_factor=0.3,
+        status_forcelist=(500, 502, 504),
+        session=None,
+):
+    session = session or requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
 
 def threadsafe_lru(func):
     func = lru_cache()(func)
@@ -45,52 +72,50 @@ class SharedKeyAuth(AuthBase):
         self.account = account
         self.account_key = account_key
 
-    def __call__(self, r: Request):
-        LOGGER.debug(f"Requesting... {r.url}")
-
+    def __get_headers(self, headers):
         required_headers = {}
-        for key, val in r.headers.items():
-            if key in ["Content-Length", "Content-Type"] or key.startswith("x-ms"):
-                required_headers[key] = val
-        r.headers = OrderedDict(required_headers)
-        r.headers["x-ms-date"] = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
-        r.headers["x-ms-version"] = "2018-11-09"
+        for key, val in headers.items():
+            if key in HEADERS_FOR_SIGN:
+                if val:
+                    required_headers[key] = val
+        if 'Content-Length' in required_headers and required_headers.get('Content-Length') == '0':
+            del required_headers['Content-Length']
+        return required_headers
 
-        parsed_url = urlparse(r.url)
-        qparams = parsed_url.query.split("&")
+    def __get_canonicalized_headers(self, headers):
+        ch = [f"{key.lower()}:{val}"
+              for key, val in sorted(headers.items(),
+                                     key=lambda x: x[0]) if key.startswith("x-ms")]
+        return "\n".join(ch)
+
+    def __get_url_parameters(self, query):
+        qparams = query.split("&")
         params = {}
         for param in qparams:
             if len(param) > 0:
                 key = param[:param.index("=")]
-                val = param[param.index("=")+1:]
+                val = param[param.index("=") + 1:]
                 params[key] = val
         params = "\n".join([f"{quote(key.lower())}:{val}"
                             for key, val in sorted(params.items(), key=lambda x: x[0])])
+        return params
 
-        canonicalized_headers = [f"{key.lower()}:{val}"
-                                 for key, val in sorted(r.headers.items(),
-                                                        key=lambda x: x[0]) if key.startswith("x-ms")]
+    def __call__(self, r: Request):
+        LOGGER.debug(f"Requesting... {r.url}")
+        r.headers["x-ms-date"] = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+        r.headers["x-ms-version"] = "2019-02-02"
 
-        canonicalized_headers = "\n".join(canonicalized_headers)
+        required_headers = self.__get_headers(r.headers)
 
-        length = r.headers.get("Content-Length", "0")
-        if length == "0":
-            length = ""
+        parsed_url = urlparse(r.url)
+        params = self.__get_url_parameters(parsed_url.query)
 
-        content_type = r.headers.get("Content-Type", "")
+        canonicalized_headers = self.__get_canonicalized_headers(r.headers)
+
+        headers_in_sign = "\n".join([required_headers.get(h, '') for h in HEADERS_FOR_SIGN])
 
         inputvalue = f"{r.method}\n" \
-                     "\n" \
-                     "\n" \
-                     f"{length}\n" \
-                     "\n" \
-                     f"{content_type}\n" \
-                     "\n" \
-                     "\n" \
-                     "\n" \
-                     "\n" \
-                     "\n" \
-                     "\n" \
+                     f"{headers_in_sign}\n" \
                      f"{canonicalized_headers}\n" \
                      f"/{self.account}{parsed_url.path}\n{params}"
 
@@ -107,7 +132,7 @@ class SharedKeyAuth(AuthBase):
 
 class BasicClient:
 
-    def __init__(self, storage_account, shared_key, dns_suffix=None, account=None):
+    def __init__(self, storage_account, shared_key, dns_suffix=None, account=None, retries=3):
         self.storage_account = storage_account
         if dns_suffix is None:
             self.dns_suffix = "dfs.core.windows.net"
@@ -119,16 +144,17 @@ class BasicClient:
         else:
             self.account = account
         self.shared_key = shared_key
+        self.retries = retries
 
     def make_request(self, method, url, headers=None, data=None):
-        response = requests.request(method, url, headers=headers, auth=SharedKeyAuth(self.account, self.shared_key),
-                                    data=data)
+        response = requests_retry_session(retries=self.retries) \
+            .request(method, url, headers=headers, auth=SharedKeyAuth(self.account, self.shared_key), data=data)
         return response
 
 
 class FileSystemClient(BasicClient):
-    def __init__(self, storage_account, shared_key, dns_suffix=None, account=None):
-        super().__init__(storage_account, shared_key, dns_suffix, account)
+    def __init__(self, storage_account, shared_key, dns_suffix=None, account=None, retries=3):
+        super().__init__(storage_account, shared_key, dns_suffix, account, retries)
 
     def create_filesystem(self, file_path: str, timeout: int = None, properties: dict = None):
         if file_path.startswith("/"):
@@ -429,7 +455,7 @@ class PathClient(BasicClient):
         if timeout:
             params.append(f"timeout={timeout}")
 
-        headers = {'Range': '0'}
+        headers = {'Range': 'bytes=0-'}
 
         query = "&".join(params)
 
@@ -441,8 +467,9 @@ class PathClient(BasicClient):
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
-    def update_path(self, filesystem: str, path: str, action: str, data = None, position: int = 0,
-                    retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None, close: bool = None, attrs: dict = None):
+    def update_path(self, filesystem: str, path: str, action: str, data=None, position: int = 0,
+                    retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None, close: bool = None,
+                    attrs: dict = None):
         if action not in ["append", "flush", "setProperties", "setAccessControl"]:
             raise Exception("Action is not valid")
         if path.startswith("/"):
