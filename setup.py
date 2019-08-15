@@ -21,7 +21,7 @@ setup(
     packages=find_packages(),
     zip_safe=False,
     classifiers=[
-        "Development Status :: 4 - Beta",
+        "Development Status :: 3 — Alpha",
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3.5",
