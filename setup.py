@@ -3,7 +3,10 @@ from pip._internal.req import parse_requirements
 
 install_reqs = parse_requirements("requirements.txt", session="hack")
 
-version = "0.0.5"
+with open("README.md", "r") as f:
+    README = f.read()
+
+version = "0.0.6"
 
 setup(
     name="pydatalake-gen2",
@@ -11,6 +14,9 @@ setup(
     author="Ivan Grunev",
     author_email="ivan.grunev@gmail.com",
     include_package_data=True,
+    long_description=README,
+    long_description_content_type='text/markdown',
+    python_requires=">=3.4",
     version=version,
     url="https://github.com/estatic/pydatalake-gen2",
     packages=find_packages(),
@@ -18,5 +24,7 @@ setup(
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
+        "Topic :: Software Development :: Libraries",
+        "Topic :: Software Development :: Libraries :: Python Modules",
     ],
 )
