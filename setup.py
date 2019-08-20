@@ -6,7 +6,7 @@ install_reqs = parse_requirements("requirements.txt", session="hack")
 with open("README.md", "r") as f:
     README = f.read()
 
-version = "0.0.6"
+version = "0.0.7"
 
 setup(
     name="pydatalake-gen2",

@@ -1,23 +1,21 @@
+import base64
+import hashlib
+import hmac
 import logging
+import os
 import threading
-from collections import OrderedDict, defaultdict
+import uuid
+from collections import defaultdict
+from datetime import datetime
+from functools import lru_cache, _make_key
 from random import seed
+from urllib.parse import quote
+from urllib.parse import urlparse, unquote
 
 import requests
-import hmac
-from datetime import datetime
-import hashlib
-import base64
-import os
-from urllib.parse import urlparse
-from urllib.parse import quote
-
 from requests import Request
 from requests.adapters import HTTPAdapter
 from requests.auth import AuthBase
-
-from functools import lru_cache, _make_key
-
 from urllib3 import Retry
 
 LEASE_ACTIONS = ["acquire", "break", "change", "renew", "release"]
@@ -95,7 +93,7 @@ class SharedKeyAuth(AuthBase):
             if len(param) > 0:
                 key = param[:param.index("=")]
                 val = param[param.index("=") + 1:]
-                params[key] = val
+                params[key] = unquote(val)
         params = "\n".join([f"{quote(key.lower())}:{val}"
                             for key, val in sorted(params.items(), key=lambda x: x[0])])
         return params
@@ -103,7 +101,8 @@ class SharedKeyAuth(AuthBase):
     def __call__(self, r: Request):
         LOGGER.debug(f"Requesting... {r.url}")
         r.headers["x-ms-date"] = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
-        r.headers["x-ms-version"] = "2019-02-02"
+        r.headers["x-ms-version"] = "2018-11-09"
+        r.headers["x-ms-client-request-id"] = str(uuid.uuid4())
 
         required_headers = self.__get_headers(r.headers)
 
@@ -409,13 +408,16 @@ class PathClient(BasicClient):
         if filesystem.startswith("/"):
             filesystem = filesystem[1:]
 
+        if not directory:
+            directory = "/"
+
         params = []
         if timeout:
             params.append(f"timeout={timeout}")
         if continuation:
             params.append(f"continuation={quote(continuation)}")
         if directory:
-            params.append(f"directory={directory}")
+            params.append(f"directory={quote(directory)}")
         if max_results:
             params.append(f"maxResults={max_results}")
 
@@ -438,7 +440,7 @@ class PathClient(BasicClient):
         if response.status_code == 200:
             paths = response.json()
             if response.headers.get("x-ms-continuation", None) is not None:
-                paths["continuation"] = response.headers.get("x-ms-continuation")
+                paths["continuation"] = response.headers.get("x-ms-continuation", None)
             if response.headers.get("x-ms-request-id", None) is not None:
                 paths["request-id"] = response.headers.get("x-ms-request-id")
             return paths
