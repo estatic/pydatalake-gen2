@@ -27,7 +27,8 @@ class TestGen2FileSystem(unittest.TestCase):
         self.assertIsNotNone(filesystems)
 
     def test_list_path_with_prefix(self):
-        files = self.client.list_path('testfolder')
+        files = self.client.list_path('input', max_results=1000)
+        files = self.client.list_path('input', max_results=1000, continuation=files['continuation'])
         self.assertIsNotNone(files)
 
     def test_rename_file(self):
