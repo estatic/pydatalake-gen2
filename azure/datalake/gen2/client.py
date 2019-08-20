@@ -1,3 +1,12 @@
+"""
+PyDataLake Gen2 main module
+
+Licence: Apache 2.0
+
+Author: Ivan Grunev (ivan.grunev@gmail.com)
+
+The module contains set of the classes for Azure Data Lake Gen2 DFS client.
+"""
 import base64
 import hashlib
 import hmac
@@ -9,8 +18,8 @@ from collections import defaultdict
 from datetime import datetime
 from functools import lru_cache, _make_key
 from random import seed
-from urllib.parse import quote
-from urllib.parse import urlparse, unquote
+from urllib.parse import quote, unquote
+from urllib.parse import urlparse
 
 import requests
 from requests import Request
@@ -37,6 +46,14 @@ def requests_retry_session(
         status_forcelist=(500, 502, 504),
         session=None,
 ):
+    """
+    Retry policy
+    :param retries: int
+    :param backoff_factor:  float
+    :param status_forcelist: tuple of ints
+    :param session: requests.Session
+    :return: requests.Session
+    """
     session = session or requests.Session()
     retry = Retry(
         total=retries,
@@ -52,6 +69,11 @@ def requests_retry_session(
 
 
 def threadsafe_lru(func):
+    """
+    Threadsafe decorator
+    :param func:
+    :return:
+    """
     func = lru_cache()(func)
     lock_dict = defaultdict(threading.Lock)
 
@@ -63,6 +85,52 @@ def threadsafe_lru(func):
     return _thread_lru
 
 
+def get_headers(headers: dict) -> dict:
+    """
+    Returns required headers for sign
+    :param headers: dict
+    :return: dict
+    """
+    required_headers = {}
+    for key, val in headers.items():
+        if key in HEADERS_FOR_SIGN:
+            if val:
+                required_headers[key] = val
+    if 'Content-Length' in required_headers and required_headers.get('Content-Length') == '0':
+        del required_headers['Content-Length']
+    return required_headers
+
+
+def get_canonicalized_headers(headers: dict) -> str:
+    """
+    Returns a string with canonical ordered headers
+    :param headers: dict
+    :return: str
+    """
+    ch = [f"{key.lower()}:{val}"
+          for key, val in sorted(headers.items(),
+                                 key=lambda x: x[0]) if key.startswith("x-ms")]
+    return "\n".join(ch)
+
+
+def get_url_parameters(query: str) -> str:
+    """
+    Returns ordered parameters for sign
+    :param query: str
+    :return: str
+    """
+    query_params = query.split("&")
+    params = {}
+    for param in query_params:
+        if len(param) > 0:
+            key = param[:param.index("=")]
+            val = param[param.index("=") + 1:]
+            params[key] = unquote(val)
+    params = "\n".join([f"{quote(key.lower())}:{val}"
+                        for key, val in sorted(params.items(), key=lambda x: x[0])])
+    return params
+
+
 class SharedKeyAuth(AuthBase):
     """Attaches HTTP Shared Key Authentication to the given Request object."""
 
@@ -70,58 +138,30 @@ class SharedKeyAuth(AuthBase):
         self.account = account
         self.account_key = account_key
 
-    def __get_headers(self, headers):
-        required_headers = {}
-        for key, val in headers.items():
-            if key in HEADERS_FOR_SIGN:
-                if val:
-                    required_headers[key] = val
-        if 'Content-Length' in required_headers and required_headers.get('Content-Length') == '0':
-            del required_headers['Content-Length']
-        return required_headers
-
-    def __get_canonicalized_headers(self, headers):
-        ch = [f"{key.lower()}:{val}"
-              for key, val in sorted(headers.items(),
-                                     key=lambda x: x[0]) if key.startswith("x-ms")]
-        return "\n".join(ch)
-
-    def __get_url_parameters(self, query):
-        qparams = query.split("&")
-        params = {}
-        for param in qparams:
-            if len(param) > 0:
-                key = param[:param.index("=")]
-                val = param[param.index("=") + 1:]
-                params[key] = unquote(val)
-        params = "\n".join([f"{quote(key.lower())}:{val}"
-                            for key, val in sorted(params.items(), key=lambda x: x[0])])
-        return params
-
     def __call__(self, r: Request):
         LOGGER.debug(f"Requesting... {r.url}")
         r.headers["x-ms-date"] = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
         r.headers["x-ms-version"] = "2018-11-09"
         r.headers["x-ms-client-request-id"] = str(uuid.uuid4())
 
-        required_headers = self.__get_headers(r.headers)
+        required_headers = get_headers(r.headers)
 
         parsed_url = urlparse(r.url)
-        params = self.__get_url_parameters(parsed_url.query)
+        params = get_url_parameters(parsed_url.query)
 
-        canonicalized_headers = self.__get_canonicalized_headers(r.headers)
+        canonicalized_headers = get_canonicalized_headers(r.headers)
 
         headers_in_sign = "\n".join([required_headers.get(h, '') for h in HEADERS_FOR_SIGN])
 
-        inputvalue = f"{r.method}\n" \
-                     f"{headers_in_sign}\n" \
-                     f"{canonicalized_headers}\n" \
-                     f"/{self.account}{parsed_url.path}\n{params}"
+        input_value = f"{r.method}\n" \
+            f"{headers_in_sign}\n" \
+            f"{canonicalized_headers}\n" \
+            f"/{self.account}{parsed_url.path}\n{params}"
 
-        LOGGER.debug(inputvalue)
+        LOGGER.debug(input_value)
         dig = hmac.new(
             base64.b64decode(self.account_key),
-            msg=inputvalue.encode("utf-8"), digestmod=hashlib.sha256
+            msg=input_value.encode("utf-8"), digestmod=hashlib.sha256
         ).digest()
         signature = base64.b64encode(dig).decode()
         r.headers["Authorization"] = f"SharedKey {self.account}:{signature}"
@@ -130,6 +170,9 @@ class SharedKeyAuth(AuthBase):
 
 
 class BasicClient:
+    """
+    Basic Data Lake Gen2 client class
+    """
 
     def __init__(self, storage_account, shared_key, dns_suffix=None, account=None, retries=3):
         self.storage_account = storage_account
@@ -152,10 +195,20 @@ class BasicClient:
 
 
 class FileSystemClient(BasicClient):
+    """
+    File system data lake gen2 class. Contains all methods to work with File Systems.
+    """
     def __init__(self, storage_account, shared_key, dns_suffix=None, account=None, retries=3):
         super().__init__(storage_account, shared_key, dns_suffix, account, retries)
 
-    def create_filesystem(self, file_path: str, timeout: int = None, properties: dict = None):
+    def create_filesystem(self, file_path: str, timeout: int = None, properties: dict = None) -> dict:
+        """
+        Creates new filesystem
+        :param file_path: str
+        :param timeout: int
+        :param properties: dict
+        :return: dict
+        """
         if file_path.startswith("/"):
             file_path = file_path[1:]
         headers = {}
@@ -172,7 +225,13 @@ class FileSystemClient(BasicClient):
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
-    def delete_filesystem(self, file_path: str, timeout: int = None):
+    def delete_filesystem(self, file_path: str, timeout: int = None) -> dict:
+        """
+        Removes file system
+        :param file_path: str
+        :param timeout: int
+        :return: dict
+        """
         if file_path.startswith("/"):
             file_path = file_path[1:]
 
@@ -193,13 +252,21 @@ class FileSystemClient(BasicClient):
 
     def list_filesystem(self, prefix: str = None, continuation: str = None, max_results: int = None,
                         timeout: str = None):
+        """
+        Returns list of exist file systems
+        :param prefix: str
+        :param continuation: str
+        :param max_results: int
+        :param timeout: str
+        :return:
+        """
         params = ["resource=account"]
         if prefix:
             params.append(f"prefix={prefix}")
         if timeout:
             params.append(f"timeout={timeout}")
         if continuation:
-            params.append(f"continuation={continuation}")
+            params.append(f"continuation={quote(continuation)}")
         if max_results:
             params.append(f"maxResults={max_results}")
         query = "&".join(params)
@@ -264,7 +331,7 @@ class PathClient(BasicClient):
         if timeout:
             params.append(f"timeout={timeout}")
         if continuation:
-            params.append(f"continuation={continuation}")
+            params.append(f"continuation={quote(continuation)}")
         if mode:
             params.append(f"mode={mode}")
         if resource:
@@ -328,7 +395,7 @@ class PathClient(BasicClient):
         if timeout:
             params.append(f"timeout={timeout}")
         if continuation:
-            params.append(f"continuation={continuation}")
+            params.append(f"continuation={quote(continuation)}")
         if recursive:
             params.append(f"recursive=true")
         else:
