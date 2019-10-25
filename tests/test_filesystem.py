@@ -40,6 +40,14 @@ class TestGen2FileSystem(unittest.TestCase):
         response = self.client.update_path('test1', 'test/test_file', 'append', 'test', timeout=60, position=0)
         self.assertIsNotNone(response)
 
+    def test_full_upload_file(self):
+        response = self.client.upload_filepath_to_path('nonecorebi', '/some_binary_file.xlsx',
+                                                       '/path/to/some_binary_file.xlsx')
+
+    def test_fully_upload_data(self):
+        with open('some_file', 'rb') as f:
+            response = self.client.upload_file_to_path('nonecorebi', '/some_binary_file.xlsx', f)
+
     def test_update_path_flush(self):
         response = self.client.update_path('test1', 'test/test_file', 'flush', position=0)
         self.assertIsNotNone(response)
