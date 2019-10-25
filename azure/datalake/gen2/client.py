@@ -30,6 +30,7 @@ from urllib3 import Retry
 LEASE_ACTIONS = ["acquire", "break", "change", "renew", "release"]
 HEADERS_FOR_SIGN = ["Content-Encoding", "Content-Language", "Content-Length", "Content-MD5", "Content-Type", "Date",
                     "If-Modified-Since", "If-Match", "If-None-Match", "If-Unmodified-Since", "Range"]
+CHUNK_SIZE = 1024000
 
 LOGGER = logging.getLogger("pydatalake.gen2")
 LOGGER.setLevel(logging.DEBUG)
@@ -129,6 +130,14 @@ def get_url_parameters(query: str) -> str:
     params = "\n".join([f"{quote(key.lower())}:{val}"
                         for key, val in sorted(params.items(), key=lambda x: x[0])])
     return params
+
+
+def read_in_chunks(file_object, read_chunk_size):
+    while True:
+        data = file_object.read(read_chunk_size)
+        if not data:
+            break
+        yield data
 
 
 class SharedKeyAuth(AuthBase):
@@ -535,6 +544,39 @@ class PathClient(BasicClient):
             return response.headers
         else:
             raise Exception(f"{response.status_code}: {response.text}")
+
+    def upload_file_to_path(self, filesystem: str, path: str, fp, retain_uncommitted_data: bool = None,
+                            timeout: int = None, lease_id: str = None, close: bool = None, attrs: dict = None,
+                            chunk_size: int = None):
+
+        provided_chunk_size = chunk_size if chunk_size is not None else CHUNK_SIZE
+
+        position = 0
+        for piece in read_in_chunks(fp, provided_chunk_size):
+            self.update_path(filesystem, path, "append", piece, position, retain_uncommitted_data,
+                             timeout, lease_id, close, attrs)
+            position += provided_chunk_size
+        self.update_path(filesystem, path, 'flush', position=0)
+
+    def upload_filepath_to_path(self, filesystem: str, path: str, source_path: str,
+                                retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None,
+                                close: bool = None, attrs: dict = None, chunk_size: int = None):
+
+        with open(source_path, 'rb') as f:
+            self.upload_file_to_path(filesystem, path, f, retain_uncommitted_data, timeout, lease_id, close, attrs,
+                                     chunk_size)
+
+    def upload_data_to_path(self, filesystem: str, path: str, data=None, retain_uncommitted_data: bool = None,
+                            timeout: int = None, lease_id: str = None, close: bool = None, attrs: dict = None,
+                            chunk_size: int = None):
+        provided_chunk_size = chunk_size if chunk_size is not None else CHUNK_SIZE
+
+        number_of_bytes = len(data)
+
+        for i in range(0, number_of_bytes + 1, provided_chunk_size):
+            self.update_path(filesystem, path, "append", data[i:i + provided_chunk_size], i, retain_uncommitted_data,
+                             timeout, lease_id, close, attrs)
+        self.update_path(filesystem, path, 'flush', position=0)
 
     def update_path(self, filesystem: str, path: str, action: str, data=None, position: int = 0,
                     retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None, close: bool = None,
