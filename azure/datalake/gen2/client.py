@@ -548,15 +548,18 @@ class PathClient(BasicClient):
     def upload_file_to_path(self, filesystem: str, path: str, fp, retain_uncommitted_data: bool = None,
                             timeout: int = None, lease_id: str = None, close: bool = None, attrs: dict = None,
                             chunk_size: int = None):
-
+        self.create_path(filesystem, path, resource='file')
         provided_chunk_size = chunk_size if chunk_size is not None else CHUNK_SIZE
 
         position = 0
+        file_length = os.fstat(fp.fileno()).st_size
         for piece in read_in_chunks(fp, provided_chunk_size):
-            self.update_path(filesystem, path, "append", piece, position, retain_uncommitted_data,
-                             timeout, lease_id, close, attrs)
+            resp = self.update_path(filesystem, path, "append", piece, position, retain_uncommitted_data,
+                                    timeout, lease_id, close, attrs)
+            print(resp)
             position += provided_chunk_size
-        self.update_path(filesystem, path, 'flush', position=0)
+        resp = self.update_path(filesystem, path, 'flush', position=file_length, retain_uncommitted_data=True, close=True)
+        print(resp)
 
     def upload_filepath_to_path(self, filesystem: str, path: str, source_path: str,
                                 retain_uncommitted_data: bool = None, timeout: int = None, lease_id: str = None,
