@@ -52,6 +52,9 @@ class TestGen2FileSystem(unittest.TestCase):
         response = self.client.update_path('test1', 'test/test_file', 'flush', position=0)
         self.assertIsNotNone(response)
 
+    def test_read_file(self):
+        response = self.client.read_path('test1', 'test/test_file')
+        self.assertIsNotNone(response)
 
 if __name__ == '__main__':
     unittest.main()

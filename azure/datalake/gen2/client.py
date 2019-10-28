@@ -525,7 +525,7 @@ class PathClient(BasicClient):
         else:
             raise Exception(f"{response.status_code}: {response.text}\n{directory}")
 
-    def read_path(self, filesystem: str, path: str, timeout: int = None):
+    def read_path(self, filesystem: str, path: str, timeout: int = 60):
         if path.startswith("/"):
             path = path[1:]
 
@@ -540,8 +540,8 @@ class PathClient(BasicClient):
         response = self.make_request("GET", f"https://{self.storage_account}.{self.dns_suffix}/"
                                             f"{filesystem}/{path}"
                                             f"?{query}", headers=headers)
-        if response.status_code == 200:
-            return response.headers
+        if response.status_code in (200, 206):
+            return response
         else:
             raise Exception(f"{response.status_code}: {response.text}")
 
